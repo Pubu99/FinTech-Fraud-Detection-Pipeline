@@ -5,13 +5,12 @@ Implements real-time fraud detection with event-time processing and watermarking
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, from_json, to_timestamp, window, count, sum as _sum,
-    lag, unix_timestamp, when, lit, current_timestamp
+    col, from_json, to_timestamp, window, approx_count_distinct,
+    when, lit, current_timestamp
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, DoubleType, TimestampType
 )
-from pyspark.sql.window import Window
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -57,7 +56,7 @@ class FraudDetectionStream:
             .format("kafka") \
             .option("kafka.bootstrap.servers", self.kafka_bootstrap_servers) \
             .option("subscribe", self.kafka_topic) \
-            .option("startingOffsets", "latest") \
+            .option("startingOffsets", "earliest") \
             .option("failOnDataLoss", "false") \
             .load()
         
@@ -90,33 +89,44 @@ class FraudDetectionStream:
         """
         # Add watermark to handle late data (15 minutes tolerance)
         transactions_with_watermark = transactions.withWatermark("timestamp", "15 minutes")
-        
-        # Define window specification for each user
-        user_window = Window.partitionBy("user_id").orderBy("timestamp")
-        
-        # Get previous location and timestamp for each user
-        transactions_with_prev = transactions_with_watermark \
-            .withColumn("prev_location", lag("location").over(user_window)) \
-            .withColumn("prev_timestamp", lag("timestamp").over(user_window))
-        
-        # Calculate time difference in minutes
-        transactions_with_diff = transactions_with_prev.withColumn(
-            "time_diff_minutes",
-            (unix_timestamp("timestamp") - unix_timestamp("prev_timestamp")) / 60
+
+        # Build 10-minute windows per user and flag windows with multiple locations
+        windowed_locations = transactions_with_watermark.groupBy(
+            col("user_id"),
+            window(col("timestamp"), "10 minutes", "1 minute")
+        ).agg(
+            approx_count_distinct("location").alias("location_count")
         )
-        
-        # Detect impossible travel: different location within 10 minutes
-        impossible_travel = transactions_with_diff.filter(
-            (col("prev_location").isNotNull()) &
-            (col("location") != col("prev_location")) &
-            (col("time_diff_minutes") <= 10)
+
+        impossible_windows = windowed_locations.filter(col("location_count") > 1)
+
+        # Join back to original events inside flagged windows
+        transactions_with_window = transactions_with_watermark.withColumn(
+            "event_window",
+            window(col("timestamp"), "10 minutes", "1 minute")
+        )
+
+        tx = transactions_with_window.alias("tx")
+        win = impossible_windows.alias("win")
+
+        impossible_travel = tx.join(
+            win,
+            (col("tx.user_id") == col("win.user_id")) &
+            (col("tx.event_window") == col("win.window")),
+            "inner"
+        ).select(
+            col("tx.user_id").alias("user_id"),
+            col("tx.timestamp").alias("timestamp"),
+            col("tx.merchant_category").alias("merchant_category"),
+            col("tx.amount").alias("amount"),
+            col("tx.location").alias("location")
         )
         
         return impossible_travel.withColumn(
             "fraud_reason",
             lit("IMPOSSIBLE_TRAVEL")
         ).select(
-            "user_id", "timestamp", "merchant_category", 
+            "user_id", "timestamp", "merchant_category",
             "amount", "location", "fraud_reason"
         )
     

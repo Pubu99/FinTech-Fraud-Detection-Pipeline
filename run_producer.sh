@@ -3,7 +3,7 @@
 echo "Running Transaction Producer..."
 
 # Install dependencies if not already installed
-pip install kafka-python
+pip install kafka-python-ng
 
 # Run producer with default settings
 # Generate 500 transactions with 15% fraud rate

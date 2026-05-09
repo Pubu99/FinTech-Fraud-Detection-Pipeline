@@ -104,83 +104,333 @@ FinTech-Fraud-Detection-Pipeline/
 
 ## Quick Start
 
-### 1. Start All Services
+### Setup Guide (Windows PowerShell)
 
-**Windows:**
+Open **3 PowerShell terminals** in the project folder:
 
-```bash
-start_services.bat
+- **Terminal A**: Docker services (one-time setup)
+- **Terminal B**: Spark streaming job (long-running)
+- **Terminal C**: Producer + verification commands
+
+> **Note:** This project runs **Airflow inside Docker**. You do **not** need to install Apache Airflow locally on Windows.
+
+---
+
+### Step 1: Create Virtual Environment (Terminal A)
+
+```powershell
+# Create virtual environment
+python -m venv venv
+
+# Activate virtual environment
+.\venv\Scripts\Activate.ps1
+
+# Upgrade pip
+pip install --upgrade pip
+
+# Install all Python dependencies
+pip install -r requirements.txt
 ```
 
-**Linux/Mac:**
+> **Important:** You should see `(venv)` prefix in your terminal after activation. Always activate the venv before running Python scripts.
 
-```bash
-chmod +x start_services.sh
-./start_services.sh
+---
+
+### Step 2: Start Docker Services (Terminal A)
+
+**Make sure Docker Desktop is running first!**
+
+```powershell
+# Start all Docker containers
+docker-compose up -d
+
+# Verify containers are running
+docker-compose ps
+
+# Wait 30 seconds for services to initialize
+timeout /t 30 /nobreak
 ```
 
-This will start:
+Expected containers:
 
-- Zookeeper and Kafka
-- Spark Master and Worker
-- PostgreSQL
-- Airflow Webserver and Scheduler
+- `zookeeper` - Kafka coordinator
+- `kafka` - Message broker
+- `spark-master` - Spark cluster master
+- `spark-worker` - Spark cluster worker
+- `postgres` - Database for fraud transactions
+- `airflow-webserver` - Airflow UI
+- `airflow-scheduler` - Airflow task scheduler
 
-### 2. Verify Services
+---
 
-Access the following URLs:
+### Step 3: Create Kafka Topic (Terminal A)
 
-- **Airflow UI**: http://localhost:8081 (use the Airflow admin credentials you configured)
-- **Spark Master**: http://localhost:8080
-- **PostgreSQL**: localhost:5432 (use the PostgreSQL credentials you configured)
+```powershell
+# Create the transactions topic with 3 partitions
+docker exec kafka kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic transactions --partitions 3 --replication-factor 1
 
-### 3. Run Transaction Producer
-
-**Windows:**
-
-```bash
-run_producer.bat
+# Verify topic creation
+docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list
 ```
 
-**Linux/Mac:**
+---
 
-```bash
-chmod +x run_producer.sh
-./run_producer.sh
+### Step 4: Verify Services
+
+Access the following URLs in your browser:
+
+- **Airflow UI**: http://localhost:8081 (login: `admin` / `admin`)
+- **Spark Master UI**: http://localhost:8080
+- **PostgreSQL**: localhost:5432 (user: `fraud_admin` / password: `fraud_secure_pass`)
+
+---
+
+### Step 5: Submit Spark Streaming Job (Terminal B)
+
+**Open a NEW terminal (Terminal B) - this job runs continuously:**
+
+```powershell
+# Submit Spark job to process streaming data
+docker exec spark-master /opt/spark/bin/spark-submit --master spark://spark-master:7077 `
+  --conf spark.jars.ivy=/tmp/ivy `
+  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.postgresql:postgresql:42.6.0 `
+  --driver-memory 2g --executor-memory 2g `
+  /opt/spark_jobs/fraud_detection_stream.py --kafka-servers kafka:29092 --kafka-topic transactions --output-path /opt/data
 ```
 
-This generates 500 transactions with 15% fraud rate.
+> **Note:** Keep this terminal running! The Spark job will continuously process transactions from Kafka. Monitor it at http://localhost:8080
 
-### 4. Submit Spark Streaming Job
+---
 
-**Windows:**
+### Step 6: Run Transaction Producer (Terminal C)
 
-```bash
-run_spark_job.bat
+**Open a NEW terminal (Terminal C) and activate venv:**
+
+```powershell
+# Activate virtual environment
+.\venv\Scripts\Activate.ps1
+
+# Generate 500 transactions with 15% fraud rate
+python producers/transaction_producer.py --bootstrap-servers localhost:9092 --topic transactions --num-transactions 500 --fraud-ratio 0.15 --delay 0.5
 ```
 
-**Linux/Mac:**
+This generates transactions and sends them to Kafka. Spark will process them in real-time.
 
-```bash
-chmod +x run_spark_job.sh
-./run_spark_job.sh
+---
+
+### Step 7: Verify Fraud Detection (Terminal C)
+
+```powershell
+# Check fraud transactions in PostgreSQL
+docker exec -it postgres psql -U fraud_admin -d fraud_detection -c "SELECT user_id, timestamp, amount, location, fraud_reason, detected_at FROM fraud_transactions ORDER BY detected_at DESC LIMIT 10;"
 ```
 
-### 5. Enable Airflow DAG
+---
+
+### Step 8: Enable Airflow DAG (Optional)
 
 1. Open Airflow UI at http://localhost:8081
-2. Login with your configured Airflow admin credentials
+2. Login with `admin` / `admin`
 3. Find `fraud_detection_reconciliation` DAG
-4. Toggle it to "ON"
-5. Trigger manually or wait for scheduled run
+4. Toggle it to **ON**
+5. Trigger manually or wait for scheduled run (every 6 hours)
 
-### 6. Generate Analytics Report
+---
 
-```bash
+### Step 9: Generate Analytics Report (Terminal C)
+
+```powershell
+# Make sure venv is activated
 python reports/fraud_analytics.py --hours 24
 ```
 
 Reports are saved to the `reports/` directory.
+
+---
+
+## Alternative: Using Batch Scripts (Quick Method)
+
+If you prefer automation, use the provided batch scripts:
+
+**Windows:**
+
+```powershell
+.\start_services.bat    # Start all Docker services
+.\run_spark_job.bat     # Submit Spark job
+.\run_producer.bat      # Run transaction producer
+```
+
+**Linux/Mac:**
+
+```bash
+chmod +x *.sh
+./start_services.sh     # Start all Docker services
+./run_spark_job.sh      # Submit Spark job
+./run_producer.sh       # Run transaction producer
+```
+
+## Manual Command Reference
+
+### Start/Stop Docker Stack
+
+```powershell
+# Start all containers
+docker-compose up -d
+
+# View running containers
+docker-compose ps
+
+# Stop all containers
+docker-compose down
+
+# Stop and remove volumes (clean slate)
+docker-compose down -v
+
+# View logs for all services
+docker-compose logs -f
+
+# View logs for specific service
+docker-compose logs -f kafka
+docker-compose logs -f spark-master
+docker-compose logs -f postgres
+```
+
+### Kafka Operations
+
+```powershell
+# List all topics
+docker exec kafka kafka-topics --bootstrap-server localhost:9092 --list
+
+# Create transactions topic
+docker exec kafka kafka-topics --bootstrap-server localhost:9092 --create --if-not-exists --topic transactions --partitions 3 --replication-factor 1
+
+# Describe topic details
+docker exec kafka kafka-topics --bootstrap-server localhost:9092 --describe --topic transactions
+
+# Delete topic (if needed)
+docker exec kafka kafka-topics --bootstrap-server localhost:9092 --delete --topic transactions
+
+# Consume messages from topic (for debugging)
+docker exec kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic transactions --from-beginning
+```
+
+### Spark Job Submission
+
+```powershell
+# Submit streaming job (long-running)
+docker exec spark-master /opt/spark/bin/spark-submit `
+    --master spark://spark-master:7077 `
+    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.postgresql:postgresql:42.6.0 `
+    --driver-memory 2g --executor-memory 2g `
+    /opt/spark_jobs/fraud_detection_stream.py `
+    --kafka-servers kafka:29092 --kafka-topic transactions --output-path /opt/data
+
+# View Spark Master UI
+# Open: http://localhost:8080
+```
+
+### Run Transaction Producer
+
+```powershell
+# Activate venv first
+.\venv\Scripts\Activate.ps1
+
+# Basic run (500 transactions, 15% fraud rate)
+python producers/transaction_producer.py --bootstrap-servers localhost:9092 --topic transactions --num-transactions 500 --fraud-ratio 0.15 --delay 0.5
+
+# High volume test (1000 transactions, faster delay)
+python producers/transaction_producer.py --bootstrap-servers localhost:9092 --topic transactions --num-transactions 1000 --fraud-ratio 0.20 --delay 0.2
+
+# Low volume test (100 transactions, slower)
+python producers/transaction_producer.py --bootstrap-servers localhost:9092 --topic transactions --num-transactions 100 --fraud-ratio 0.10 --delay 1.0
+```
+
+### PostgreSQL Queries
+
+```powershell
+# Connect to PostgreSQL
+docker exec -it postgres psql -U fraud_admin -d fraud_detection
+
+# Or run queries directly:
+
+# View recent fraud transactions
+docker exec -it postgres psql -U fraud_admin -d fraud_detection -c "SELECT user_id, timestamp, amount, location, fraud_reason, detected_at FROM fraud_transactions ORDER BY detected_at DESC LIMIT 10;"
+
+# Count total fraud transactions
+docker exec -it postgres psql -U fraud_admin -d fraud_detection -c "SELECT COUNT(*) FROM fraud_transactions;"
+
+# Count by fraud reason
+docker exec -it postgres psql -U fraud_admin -d fraud_detection -c "SELECT fraud_reason, COUNT(*) FROM fraud_transactions GROUP BY fraud_reason;"
+
+# High-value frauds only
+docker exec -it postgres psql -U fraud_admin -d fraud_detection -c "SELECT * FROM fraud_transactions WHERE fraud_reason = 'HIGH_VALUE_TRANSACTION' ORDER BY amount DESC LIMIT 10;"
+
+# Impossible travel frauds only
+docker exec -it postgres psql -U fraud_admin -d fraud_detection -c "SELECT * FROM fraud_transactions WHERE fraud_reason = 'IMPOSSIBLE_TRAVEL' ORDER BY detected_at DESC LIMIT 10;"
+```
+
+### Airflow Operations
+
+```powershell
+# Trigger DAG from CLI
+docker exec airflow-webserver airflow dags trigger fraud_detection_reconciliation
+
+# List all DAGs
+docker exec airflow-webserver airflow dags list
+
+# Check DAG status
+docker exec airflow-webserver airflow dags state fraud_detection_reconciliation
+
+# View Airflow UI
+# Open: http://localhost:8081
+# Login: admin / admin
+```
+
+### Generate Reports
+
+```powershell
+# Activate venv first
+.\venv\Scripts\Activate.ps1
+
+# Generate 24-hour report
+python reports/fraud_analytics.py --hours 24
+
+# Generate 7-day report
+python reports/fraud_analytics.py --hours 168
+
+# Report will be saved in reports/ directory
+```
+
+### Troubleshooting Commands
+
+```powershell
+# Check if Docker is running
+docker --version
+docker-compose --version
+
+# Restart specific container
+docker-compose restart kafka
+docker-compose restart spark-master
+docker-compose restart postgres
+
+# View container resource usage
+docker stats
+
+# Check disk space used by Docker
+docker system df
+
+# Clean up unused Docker resources
+docker system prune -a
+
+# Check Python version
+python --version
+
+# Check installed packages
+pip list
+
+# Reinstall requirements
+pip install -r requirements.txt --force-reinstall
+```
 
 ## Detailed Usage
 
@@ -276,38 +526,52 @@ print(df.head())
 ### Check Service Status
 
 ```bash
-docker-compose ps
+docker compose ps
 ```
 
 ### View Logs
 
 ```bash
 # All services
-docker-compose logs -f
+docker compose logs -f
 
 # Specific service
-docker-compose logs -f kafka
-docker-compose logs -f spark-master
-docker-compose logs -f airflow-webserver
+docker compose logs -f kafka
+docker compose logs -f spark-master
+docker compose logs -f airflow-webserver
 ```
 
 ### Restart Services
 
 ```bash
-docker-compose restart [service_name]
+docker compose restart [service_name]
 ```
 
 ### Stop All Services
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 ### Clean All Data
 
 ```bash
-docker-compose down -v
+docker compose down -v
+```
+
+**Windows (PowerShell):**
+
+```powershell
+Remove-Item -Recurse -Force .\data\* -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force .\reports\*.csv -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force .\reports\*.png -ErrorAction SilentlyContinue
+```
+
+**Linux/Mac:**
+
+```bash
 rm -rf data/*
+rm -rf reports/*.csv reports/*.png
 ```
 
 ## Ethical Considerations
@@ -352,10 +616,12 @@ CREATE INDEX idx_fraud_timestamp ON fraud_transactions(timestamp);
 
 ## Testing
 
-### Unit Test Producer
+### System Test (recommended)
+
+This repo includes a simple end-to-end sanity check:
 
 ```bash
-python -m pytest tests/test_producer.py
+python test_system.py
 ```
 
 ### Validate Kafka Topic

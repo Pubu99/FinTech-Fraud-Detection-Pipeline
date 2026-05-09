@@ -3,7 +3,7 @@
 echo "Submitting Spark Fraud Detection Job..."
 
 # Submit Spark job to master
-docker exec spark-master spark-submit \
+docker exec spark-master /opt/spark/bin/spark-submit \
     --master spark://spark-master:7077 \
     --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.postgresql:postgresql:42.6.0 \
     --driver-memory 2g \

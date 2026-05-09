@@ -2,7 +2,7 @@
 echo Running Transaction Producer...
 
 REM Install dependencies if not already installed
-pip install kafka-python
+pip install kafka-python-ng
 
 REM Run producer with default settings
 REM Generate 500 transactions with 15% fraud rate
