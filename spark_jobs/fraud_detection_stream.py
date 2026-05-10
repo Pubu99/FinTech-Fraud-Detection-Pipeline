@@ -100,19 +100,22 @@ class FraudDetectionStream:
 
         impossible_windows = windowed_locations.filter(col("location_count") > 1)
 
-        # Join back to original events inside flagged windows
-        transactions_with_window = transactions_with_watermark.withColumn(
-            "event_window",
-            window(col("timestamp"), "10 minutes", "1 minute")
+        # Project window bounds to avoid carrying a second event-time column
+        impossible_windows = impossible_windows.select(
+            col("user_id"),
+            col("window.start").alias("window_start"),
+            col("window.end").alias("window_end")
         )
 
-        tx = transactions_with_window.alias("tx")
+        # Join back to original events inside flagged windows
+        tx = transactions_with_watermark.alias("tx")
         win = impossible_windows.alias("win")
 
         impossible_travel = tx.join(
             win,
             (col("tx.user_id") == col("win.user_id")) &
-            (col("tx.event_window") == col("win.window")),
+            (col("tx.timestamp") >= col("win.window_start")) &
+            (col("tx.timestamp") < col("win.window_end")),
             "inner"
         ).select(
             col("tx.user_id").alias("user_id"),
